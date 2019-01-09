@@ -225,9 +225,9 @@ class Data_preprocessing():
             data_list.append(normalizer_feature)
             self.preprocessing_obj_dict["Normalizer"] = normalizer
         # 标签预处理
-        if label_preprocessing_method is not None:
-            label = self.label_preprocessing(dataset, label_name, label_preprocessing_method)
-            data_list.append(label)
+        # if label_preprocessing_method is not None:
+        label = self.label_preprocessing(dataset, label_name, label_preprocessing_method)
+        data_list.append(label)
         # 把全部预处理数据连接起来
         data = pd.concat(data_list, axis=1)
         # 保存预处理对象
@@ -261,6 +261,9 @@ class Data_preprocessing():
             label_preprocessing_obj = OneHotEncoder_()
         elif label_preprocessing_method == "StandardScaler":
             label_preprocessing_obj = StandardScaler_()
+        elif label_preprocessing_method is None:
+            self.preprocessing_obj_dict["label_preprocessing_obj"] = label_preprocessing_obj
+            return dataset.loc[:, [label_name]]
         # 标签预处理
         label = label_preprocessing_obj.fit_transform(dataset, label_name)
         # 把 label_preprocessing_obj 保存到 preprocessing_obj_dict 字典中

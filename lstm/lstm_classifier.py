@@ -5,6 +5,7 @@ import pickle
 import pandas as pd
 import numpy as np
 from sklearn.utils import shuffle
+from sklearn.metrics import roc_auc_score, recall_score, confusion_matrix
 import tensorflow as tf
 
 
@@ -100,7 +101,7 @@ def two_way_multilayer_lstm(lstm_input, hidden_layer_units, lstm_layers_num, kee
 
 
 def forward_propagation(network_structure, features, time_step, input_size,
-                        hidden_layer_units, lstm_layers_num, n_classes, keep_prob_placeholder):
+                        hidden_layer_units, lstm_layers_num, n_classes, keep_prob_placeholder, scope_name="LSTM"):
     """
     功能：LSTM 前向传播
     参数：
@@ -123,27 +124,27 @@ def forward_propagation(network_structure, features, time_step, input_size,
         inputs=features,
         units=hidden_layer_units,
         activation=tf.nn.relu,
-        kernel_initializer=tf.variance_scaling_initializer()
+        kernel_initializer=tf.variance_scaling_initializer(seed=0)
     )
     # 把隐藏层的输出切分成 time_step 个时序，然后作为 LSTM 的输入
     lstm_input = tf.reshape(hidden_layer_output , [-1 , time_step , hidden_layer_units])
 
     # LSTM 层
-    # LSTM 层
-    if network_structure == "单向多层lstm":
-        fc_input = one_way_multilayer_lstm(lstm_input, hidden_layer_units, lstm_layers_num, keep_prob_placeholder)
-    elif network_structure == "双向单层lstm":
-        fc_input = two_way_single_layer_lstm(lstm_input, hidden_layer_units, keep_prob_placeholder)
-    elif network_structure == "双向多层lstm":
-        fc_input = two_way_multilayer_lstm(lstm_input, hidden_layer_units, lstm_layers_num, keep_prob_placeholder)
-    else:
-        fc_input = None
+    with tf.variable_scope(scope_name) as scope:
+        if network_structure == "单向多层lstm":
+            fc_input = one_way_multilayer_lstm(lstm_input, hidden_layer_units, lstm_layers_num, keep_prob_placeholder)
+        elif network_structure == "双向单层lstm":
+            fc_input = two_way_single_layer_lstm(lstm_input, hidden_layer_units, keep_prob_placeholder)
+        elif network_structure == "双向多层lstm":
+            fc_input = two_way_multilayer_lstm(lstm_input, hidden_layer_units, lstm_layers_num, keep_prob_placeholder)
+        else:
+            fc_input = None
 
     # LSTM 与输出层进行全连接
     logits = tf.layers.dense(
         inputs=fc_input,
         units=n_classes,
-        kernel_initializer=tf.variance_scaling_initializer()
+        kernel_initializer=tf.variance_scaling_initializer(seed=0)
     )
     return logits
 
@@ -169,7 +170,11 @@ def backward_propagation(labels, logits, weight_decay, learning_rate, global_ste
     tf.summary.scalar("loss", loss)
     # 定义优化器，然后最小化损失函数
     optimizer = tf.train.AdamOptimizer(learning_rate)
-    train_op = optimizer.minimize(loss, global_step=global_step)
+    # train_op = optimizer.minimize(loss, global_step=global_step)
+
+    grad_vars = optimizer.compute_gradients(loss)
+    train_op = optimizer.apply_gradients(grad_vars, global_step)
+
     return train_op
 
 
@@ -188,22 +193,6 @@ def accuracy_rate(labels, logits):
     accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
     tf.summary.scalar("accuracy", accuracy)
     return accuracy
-
-
-
-def metrics_auc(labels, logits):
-    auc_value, auc_op = tf.metrics.auc(labels=tf.argmax(labels, 1), predictions=tf.argmax(logits, 1))
-    auc = [auc_value, auc_op]
-    tf.summary.scalar("auc", auc_value)
-    return auc
-
-
-
-# def metrics_auc(labels, logits):
-#     auc_value, auc_op = tf.metrics.accuracy(labels=tf.argmax(labels, 1), predictions=tf.argmax(logits, 1))
-#     auc = [auc_value, auc_op]
-#     tf.summary.scalar("auc", auc_value)
-#     return auc
 
 
 
@@ -226,16 +215,18 @@ def next_batch(current_iteration_num, number_samples, features, labels, batch_si
     # 计算 start_index、 end_index
     start_index = (n_batch * batch_size) % number_samples #当前batch的起始index
     end_index = min(start_index + batch_size  , number_samples) #当前batch的结束index
-    # 每个 epochs 开始时都洗牌
-    train_data = pd.concat([features, labels], axis=1)
-    train_data = shuffle(train_data)
-    train_data = train_data.reset_index(drop=True)
-    if len(labels.shape) == 2:
-        n_classes = labels.shape[1]
-    else:
-        n_classes = 1
-    features = train_data.loc[:, train_data.columns[0:-n_classes]]
-    labels = train_data.loc[:, train_data.columns[-n_classes:]]
+
+    # # 每个 epochs 开始时都洗牌
+    # train_data = pd.concat([features, labels], axis=1)
+    # train_data = shuffle(train_data)
+    # train_data = train_data.reset_index(drop=True)
+    # if len(labels.shape) == 2:
+    #     n_classes = labels.shape[1]
+    # else:
+    #     n_classes = 1
+    # features = train_data.loc[:, train_data.columns[0:-n_classes]]
+    # labels = train_data.loc[:, train_data.columns[-n_classes:]]
+
     # 获取 batch_x、 batch_y
     batch_x = features[start_index: end_index] #当前batch的起始数据
     batch_y = labels[start_index: end_index] #当前batch的结束数据
@@ -243,7 +234,8 @@ def next_batch(current_iteration_num, number_samples, features, labels, batch_si
 
 
 
-def train(train_op, auc, features, labels, logits, x_train, y_train, x_eval, y_eval,
+
+def train(train_op, features, labels, logits, x_train, y_train, x_eval, y_eval,
         train_epochs, number_samples, batch_size, keep_prob_placeholder, keep_prob,
         epochs_per_eval, model_dir, global_step):
     """
@@ -270,7 +262,6 @@ def train(train_op, auc, features, labels, logits, x_train, y_train, x_eval, y_e
     with tf.Session() as sess:
         saver = tf.train.Saver(max_to_keep=None)
         # 初始化所有变量
-        sess.run(tf.local_variables_initializer())
         init = tf.global_variables_initializer()
         sess.run(init)
         # tensorboard
@@ -288,24 +279,43 @@ def train(train_op, auc, features, labels, logits, x_train, y_train, x_eval, y_e
             # 验证训练集
             steps = epochs_per_eval * one_epochs_steps
             if (i + 1) % steps == 0:
-                auc_value = auc[0]
-                auc_op = auc[1]
-                sess.run(auc_op, feed_dict={features: batch_x, labels: batch_y, keep_prob_placeholder: 1})
-                train_auc, train_summary = sess.run(
-                    [auc_value, tensorboard_summary],
-                    feed_dict={features: batch_x, labels: batch_y, keep_prob_placeholder: 1}
+
+
+                # print(str(i + 1))
+                # output = sess.run(tf.argmax(logits, 1), feed_dict={features: x_eval, labels: y_eval, keep_prob_placeholder: 1})
+                # print("真实值：", np.argmax(y_eval.values, 1))
+                # print("预测值：", output)
+
+
+                y_train_pre, train_summary = sess.run(
+                    [logits, tensorboard_summary], feed_dict={features: x_train, labels: y_train, keep_prob_placeholder: 1}
                 )
+                train_auc = roc_auc_score(y_true=y_train.values, y_score=y_train_pre)
+                train_recall = recall_score(y_true=np.argmax(y_train.values, 1), y_pred=np.argmax(y_train_pre, 1))
+                train_matrix = confusion_matrix(y_true=np.argmax(y_train.values, 1), y_pred=np.argmax(y_train_pre, 1))
                 writer_train_summary.add_summary(train_summary, i + 1)  # 每 i+1 次 把 summ 加到 tensorboard 中
                 # 验证验证集
-                sess.run(auc_op, feed_dict={features: x_eval, labels: y_eval, keep_prob_placeholder: 1})
-                eval_auc, eval_summary = sess.run(
-                    [auc_value, tensorboard_summary],
-                    feed_dict={features: x_eval, labels: y_eval, keep_prob_placeholder: 1}
+                y_eval_pre, eval_summary = sess.run(
+                    [logits, tensorboard_summary], feed_dict={features: x_eval, labels: y_eval, keep_prob_placeholder: 1}
                 )
+                eval_auc = roc_auc_score(y_true=y_eval.values, y_score=y_eval_pre)
+                eval_recall = recall_score(y_true=np.argmax(y_eval.values, 1), y_pred=np.argmax(y_eval_pre, 1))
+                eval_matrix = confusion_matrix(y_true=np.argmax(y_eval.values, 1), y_pred=np.argmax(y_eval_pre, 1))
                 writer_eval_summary.add_summary(eval_summary, i + 1)  # 每 i+1 次 把 summ 加到 tensorboard 中
-                print(str(i + 1) + "   训练集auc：" + str(train_auc) + "   验证集auc：" + str(eval_auc))
+                # 计算验证集的误杀率
+                eval_wsl = eval_matrix[0, 1] / (eval_matrix[0, 0] + eval_matrix[0, 1])
+
+                # 打印
+                # print(str(i + 1) + "  训练集AUC：" + str(train_auc) + "  验证集AUC：" + str(eval_auc))
+                # print(
+                #     str(i + 1) + "  训练集AUC：" + str(train_auc) +
+                #     "  验证集：", {"召回率" : eval_recall, "误杀率" : eval_wsl}
+                # )
+                print(str(i + 1) , eval_matrix[1, 0] / (eval_matrix[0, 0] + eval_matrix[1, 0]))
                 # 保存模型
                 save_module(saver, sess, model_dir, global_step)
+
+
 
 
 
@@ -351,9 +361,10 @@ def writer_summary(sess, modeldir):
 
 
 
-def save_hyper_parameter(model_dir, time_step, input_size, hidden_layer_units, lstm_layers_num, n_classes, keep_prob,
-                         learning_rate, weight_decay, batch_size, train_epochs, epochs_per_eval):
+def save_hyper_parameter(model_dir, network_structure, time_step, input_size, hidden_layer_units, lstm_layers_num, n_classes,
+                         keep_prob, learning_rate, weight_decay, batch_size, train_epochs, epochs_per_eval):
     parameter_pkl_obj = {
+        network_structure_ : network_structure,
         time_step_ : time_step,
         input_size_ : input_size,
         hidden_layer_units_ : hidden_layer_units,
@@ -366,6 +377,9 @@ def save_hyper_parameter(model_dir, time_step, input_size, hidden_layer_units, l
         train_epochs_ : train_epochs,
         epochs_per_eval_ : epochs_per_eval
     }
+    is_exists = os.path.exists(model_dir)  # 判断一个目录是否存在
+    if is_exists is False:
+        os.makedirs(model_dir)  # 创建目录
     pkl_path = os.path.join(model_dir, hyper_parameter_pkl_name)
     with open(pkl_path, 'wb') as f:
         pickle.dump(parameter_pkl_obj, f)
@@ -374,7 +388,7 @@ def save_hyper_parameter(model_dir, time_step, input_size, hidden_layer_units, l
 
 def fit(x_train, y_train, x_eval, y_eval, network_structure, time_step, input_size, n_classes, batch_size,
         hidden_layer_units, lstm_layers_num, train_epochs, number_samples,
-        weight_decay, learning_rate, keep_prob, epochs_per_eval, model_dir):
+        weight_decay, learning_rate, keep_prob, epochs_per_eval, model_dir, scope_name="LSTM"):
     """
     功能：综合了前面所有函数，只要把参数传进去，就可以开始训练
     参数：
@@ -397,30 +411,30 @@ def fit(x_train, y_train, x_eval, y_eval, network_structure, time_step, input_si
        model_dir：模型保存的目录
     返回值：无
     """
-    features = tf.placeholder(tf.float32, [None , time_step * input_size])  # [batch_size, 784]
-    labels = tf.placeholder(tf.float32, [None , n_classes])  # [batch_size, n_classes]
-    keep_prob_placeholder = tf.placeholder(tf.float32)  # 不被dropout的数据比例。在sess.run()时设置keep_prob具体的值
-    global_step = tf.train.get_or_create_global_step()
-    logits = forward_propagation(
-        network_structure, features, time_step, input_size,
-        hidden_layer_units, lstm_layers_num, n_classes, keep_prob_placeholder
-    )
-    auc = metrics_auc(labels, logits)
-    # accuracy = accuracy_rate(labels, logits)
-    train_op = backward_propagation(labels, logits, weight_decay, learning_rate, global_step)
-    train(
-        train_op, auc, features, labels, logits, x_train, y_train, x_eval, y_eval,
-        train_epochs, number_samples, batch_size, keep_prob_placeholder, keep_prob,
-        epochs_per_eval, model_dir, global_step
-    )
     save_hyper_parameter(
-        model_dir, time_step, input_size, hidden_layer_units, lstm_layers_num, n_classes, keep_prob,
-        learning_rate, weight_decay, batch_size, train_epochs, epochs_per_eval
+        model_dir, network_structure, time_step, input_size, hidden_layer_units, lstm_layers_num, n_classes,
+        keep_prob, learning_rate, weight_decay, batch_size, train_epochs, epochs_per_eval
     )
+    with tf.Graph().as_default() as g:
+        features = tf.placeholder(tf.float32, [None , time_step * input_size])  # [batch_size, 784]
+        labels = tf.placeholder(tf.float32, [None , n_classes])  # [batch_size, n_classes]
+        keep_prob_placeholder = tf.placeholder(tf.float32)  # 不被dropout的数据比例。在sess.run()时设置keep_prob具体的值
+        global_step = tf.train.get_or_create_global_step()
+        logits = forward_propagation(
+            network_structure, features, time_step, input_size,
+            hidden_layer_units, lstm_layers_num, n_classes, keep_prob_placeholder, scope_name
+        )
+        train_op = backward_propagation(labels, logits, weight_decay, learning_rate, global_step)
+        train(
+            train_op, features, labels, logits, x_train, y_train, x_eval, y_eval,
+            train_epochs, number_samples, batch_size, keep_prob_placeholder, keep_prob,
+            epochs_per_eval, model_dir, global_step
+        )
 
 
 
-def predict(model_dir, global_step_list, x_test, y_test=None, model_name="model.ckpt"):
+
+def predict(model_dir, global_step_list, x_test, y_test=None, scope_name="LSTM", model_name="model.ckpt"):
     """
     功能：预测
     参数：
@@ -445,13 +459,9 @@ def predict(model_dir, global_step_list, x_test, y_test=None, model_name="model.
         global_step = tf.train.get_or_create_global_step()
         logits = forward_propagation(
             network_structure, features, time_step, input_size,
-            hidden_layer_units, lstm_layers_num, n_classes, keep_prob_placeholder
+            hidden_layer_units, lstm_layers_num, n_classes, keep_prob_placeholder, scope_name
         )
         y_pred_tensor = tf.argmax(logits, 1)  # 把哑编码格式的output转换为 labelEncoder 的格式。目前来说仍然是 tensor 类型
-        if y_test is not None:
-            accuracy = accuracy_rate(labels, logits)
-        else:
-            accuracy = None
         # 对每一个模型进行预测
         y_pred_list = []  # 保存了每一个模型的预测值
         test_accuracy_list = []  # 保存了每一个模型的正确率
@@ -464,21 +474,13 @@ def predict(model_dir, global_step_list, x_test, y_test=None, model_name="model.
                 y_pred_ndarray = sess.run(y_pred_tensor, feed_dict={features: x_test, keep_prob_placeholder: 1})
                 y_pred_single_model = pd.DataFrame(y_pred_ndarray, columns=["ckpt-" + str(global_step)])  # 单个模型的预测值
                 y_pred_list.append(y_pred_single_model)
-                # 计算准确率
-                if y_test is not None:
-                    test_accuracy = sess.run(
-                        accuracy, feed_dict={features: x_test, labels: y_test, keep_prob_placeholder: 1}
-                    )
-                    print(str(global_step) + "   测试集：" + str(test_accuracy))
-                    test_accuracy_list.append(test_accuracy)
         # 通过多个模型融合计算最终的预测值
-        y_pred_multi_model = pd.concat(y_pred_list, axis=1)  # 多个模型的预测值矩阵，每一列就是一个模型的预测值
-        y_pred_value_counts = y_pred_multi_model.apply(pd.value_counts, axis=1)  # 计算每一行唯一值有几个
-        y_pred = y_pred_value_counts.fillna(0).idxmax(axis=1)  # 用0填充却失值，然后计算每一行中出现次数最多的值，作为最终的预测值
-        # 计算多个模型融合之后的平均正确率
-        if y_test is not None:
-            test_accuracy = np.array(test_accuracy_list).mean()  # 平均正确率
-            print("测试集：" + str(test_accuracy))
+        if len(y_pred_list) > 1:
+            y_pred_multi_model = pd.concat(y_pred_list, axis=1)  # 多个模型的预测值矩阵，每一列就是一个模型的预测值
+            y_pred_value_counts = y_pred_multi_model.apply(pd.value_counts, axis=1)  # 计算每一行唯一值有几个
+            y_pred = y_pred_value_counts.fillna(0).idxmax(axis=1)  # 用0填充却失值，然后计算每一行中出现次数最多的值，作为最终的预测值
+        else:
+            y_pred = y_pred_list[0]
         return y_pred
 
 

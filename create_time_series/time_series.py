@@ -28,13 +28,6 @@ def create_time_series(dataset, label_name, time_step=7):
 
 
 
-def get_preprocessing_columns(time_step, columns):
-    new_column = []
-    for i in range(time_step):
-        for column in columns:
-            new_column.append(str(i + 1) + "期_" + column)
-    columns = new_column
-    return columns
 
 
 
@@ -42,12 +35,12 @@ def get_preprocessing_columns(time_step, columns):
 # kill_method
 label_name = "A1"
 # 时序
-time_step = 7
+time_step = 3
 # 文件路径
-data_dir = r"F:\data\SSQ\train_data"
+data_dir = r"F:\SSQ\train_data_"
 feature_path = os.path.join(data_dir, "feature.xlsx")
 label_path = os.path.join(data_dir, "红球杀号对错_label.xlsx")
-output_dir = r"F:\data\SSQ" + "\\" + str(time_step) + "期" + "\\" + label_name
+output_dir = r"F:\SSQ" + "\\" + str(time_step) + "期" + "\\" + label_name
 output_path = os.path.join(output_dir, "红球杀号对错_时间序列.csv")
 # 读取数据
 feature = pd.read_excel(feature_path, sheet_name=0)

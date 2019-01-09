@@ -1,10 +1,16 @@
 # -*- coding: utf-8 -*-
 
+# from numpy.random import seed
+# seed(0)
+# from tensorflow import set_random_seed
+# set_random_seed(0)
+
+
+
 import os
 import pickle
 import numpy as np
 import pandas as pd
-from sklearn.utils import shuffle
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import warnings
@@ -25,6 +31,7 @@ weight_decay_ = "weight_decay"
 batch_size_ = "batch_size"
 train_epochs_ = "train_epochs"
 epochs_per_eval_ = "epochs_per_eval"
+scope_name_ = "scope_name"
 
 
 
@@ -102,7 +109,7 @@ def two_way_multilayer_lstm(lstm_input, hidden_layer_units, lstm_layers_num, kee
 
 
 def forward_propagation(network_structure, features, time_step, input_size,
-                        hidden_layer_units, lstm_layers_num, n_classes, keep_prob_placeholder):
+                        hidden_layer_units, lstm_layers_num, keep_prob_placeholder, scope_name="LSTM"):
     """
     功能：LSTM 前向传播
     参数：
@@ -131,19 +138,20 @@ def forward_propagation(network_structure, features, time_step, input_size,
     lstm_input = tf.reshape(hidden_layer_output , [-1 , time_step , hidden_layer_units])
 
     # LSTM 层
-    if network_structure == "单向多层lstm":
-        fc_input = one_way_multilayer_lstm(lstm_input, hidden_layer_units, lstm_layers_num, keep_prob_placeholder)
-    elif network_structure == "双向单层lstm":
-        fc_input = two_way_single_layer_lstm(lstm_input, hidden_layer_units, keep_prob_placeholder)
-    elif network_structure == "双向多层lstm":
-        fc_input = two_way_multilayer_lstm(lstm_input, hidden_layer_units, lstm_layers_num, keep_prob_placeholder)
-    else:
-        fc_input = None
+    with tf.variable_scope(scope_name) as scope:
+        if network_structure == "单向多层lstm":
+            fc_input = one_way_multilayer_lstm(lstm_input, hidden_layer_units, lstm_layers_num, keep_prob_placeholder)
+        elif network_structure == "双向单层lstm":
+            fc_input = two_way_single_layer_lstm(lstm_input, hidden_layer_units, keep_prob_placeholder)
+        elif network_structure == "双向多层lstm":
+            fc_input = two_way_multilayer_lstm(lstm_input, hidden_layer_units, lstm_layers_num, keep_prob_placeholder)
+        else:
+            fc_input = None
 
     # LSTM 与输出层进行全连接
     logits = tf.layers.dense(
         inputs=fc_input,
-        units=n_classes,
+        units=1,
         kernel_initializer=tf.variance_scaling_initializer()
     )
     return logits
@@ -164,6 +172,10 @@ def backward_propagation(labels, logits, weight_decay, learning_rate, global_ste
     # 定义损失函数
     hubers = tf.losses.huber_loss(labels=labels, predictions=logits)
     error = tf.reduce_sum(hubers)
+
+    # hubers = tf.losses.mean_squared_error(labels=labels, predictions=logits)
+    # error = tf.reduce_mean(hubers)
+
     tf.summary.scalar("error", error)
     l2_loss = weight_decay * tf.add_n(
         [tf.nn.l2_loss(tf.cast(v, tf.float32)) for v in tf.trainable_variables()]
@@ -172,7 +184,11 @@ def backward_propagation(labels, logits, weight_decay, learning_rate, global_ste
     tf.summary.scalar("loss", loss)
     # 定义优化器，然后最小化损失函数
     optimizer = tf.train.AdamOptimizer(learning_rate)
-    train_op = optimizer.minimize(loss, global_step=global_step)
+    # train_op = optimizer.minimize(loss, global_step=global_step)
+
+    grad_vars = optimizer.compute_gradients(loss)
+    train_op = optimizer.apply_gradients(grad_vars, global_step)
+
     return train_op, error
 
 
@@ -196,16 +212,18 @@ def next_batch(current_iteration_num, number_samples, features, labels, batch_si
     # 计算 start_index、 end_index
     start_index = (n_batch * batch_size) % number_samples #当前batch的起始index
     end_index = min(start_index + batch_size  , number_samples) #当前batch的结束index
-    # 每个 epochs 开始时都洗牌
-    train_data = pd.concat([features, labels], axis=1)
-    train_data = shuffle(train_data)
-    train_data = train_data.reset_index(drop=True)
-    if len(labels.shape) == 2:
-        n_classes = labels.shape[1]
-    else:
-        n_classes = 1
-    features = train_data.loc[:, train_data.columns[0:-n_classes]]
-    labels = train_data.loc[:, train_data.columns[-n_classes:]]
+
+    # # 每个 epochs 开始时都洗牌
+    # train_data = pd.concat([features, labels], axis=1)
+    # train_data = shuffle(train_data)
+    # train_data = train_data.reset_index(drop=True)
+    # if len(labels.shape) == 2:
+    #     n_classes = labels.shape[1]
+    # else:
+    #     n_classes = 1
+    # features = train_data.loc[:, train_data.columns[0:-n_classes]]
+    # labels = train_data.loc[:, train_data.columns[-n_classes:]]
+
     # 获取 batch_x、 batch_y
     batch_x = features[start_index: end_index] #当前batch的起始数据
     batch_y = labels[start_index: end_index] #当前batch的结束数据
@@ -252,12 +270,13 @@ def train(train_op, error, features, labels, logits, x_train, y_train, x_eval, y
             # 训练
             batch_x, batch_y = next_batch(i, number_samples, x_train, y_train, batch_size)
             sess.run(train_op, feed_dict={features:batch_x , labels:batch_y , keep_prob_placeholder:keep_prob})
-            # 验证训练集
+            # 验证
             steps = epochs_per_eval * one_epochs_steps
             if (i + 1) % steps == 0:
+                # 验证训练集
                 train_error, train_summary = sess.run(
                     [error, tensorboard_summary],
-                    feed_dict={features: batch_x, labels: batch_y, keep_prob_placeholder: 1}
+                    feed_dict={features: x_train, labels: y_train, keep_prob_placeholder: 1}
                 )
                 writer_train_summary.add_summary(train_summary, i + 1)  # 每 i+1 次 把 summ 加到 tensorboard 中
                 # 验证验证集
@@ -314,31 +333,34 @@ def writer_summary(sess, modeldir):
 
 
 
-def save_hyper_parameter(model_dir, network_structure, time_step, input_size, hidden_layer_units, lstm_layers_num, n_classes, keep_prob,
-                         learning_rate, weight_decay, batch_size, train_epochs, epochs_per_eval):
+def save_hyper_parameter(model_dir, network_structure, time_step, input_size, hidden_layer_units, lstm_layers_num, keep_prob,
+                         learning_rate, weight_decay, batch_size, train_epochs, epochs_per_eval, scope_name):
     parameter_pkl_obj = {
         network_structure_ : network_structure,
         time_step_ : time_step,
         input_size_ : input_size,
         hidden_layer_units_ : hidden_layer_units,
         lstm_layers_num_ : lstm_layers_num,
-        n_classes_ : n_classes,
         keep_prob_ : keep_prob,
         learning_rate_ : learning_rate,
         weight_decay_ : weight_decay,
         batch_size_ : batch_size,
         train_epochs_ : train_epochs,
-        epochs_per_eval_ : epochs_per_eval
+        epochs_per_eval_ : epochs_per_eval,
+        scope_name_ : scope_name
     }
+    is_exists = os.path.exists(model_dir)  # 判断一个目录是否存在
+    if is_exists is False:
+        os.makedirs(model_dir)  # 创建目录
     pkl_path = os.path.join(model_dir, hyper_parameter_pkl_name)
     with open(pkl_path, 'wb') as f:
         pickle.dump(parameter_pkl_obj, f)
 
 
 
-def fit(x_train, y_train, x_eval, y_eval, network_structure, time_step, input_size, n_classes, batch_size,
+def fit(x_train, y_train, x_eval, y_eval, network_structure, time_step, input_size, batch_size,
         hidden_layer_units, lstm_layers_num, train_epochs, number_samples,
-        weight_decay, learning_rate, keep_prob, epochs_per_eval, model_dir):
+        weight_decay, learning_rate, keep_prob, epochs_per_eval, model_dir, scope_name="LSTM"):
     """
     功能：综合了前面所有函数，只要把参数传进去，就可以开始训练
     参数：
@@ -361,23 +383,25 @@ def fit(x_train, y_train, x_eval, y_eval, network_structure, time_step, input_si
        model_dir：模型保存的目录
     返回值：无
     """
-    features = tf.placeholder(tf.float32, [None , time_step * input_size])  # [batch_size, 784]
-    labels = tf.placeholder(tf.float32, [None , n_classes])  # [batch_size, n_classes]
-    keep_prob_placeholder = tf.placeholder(tf.float32)  # 不被dropout的数据比例。在sess.run()时设置keep_prob具体的值
-    global_step = tf.train.get_or_create_global_step()
-    logits = forward_propagation(
-        network_structure, features, time_step, input_size,
-        hidden_layer_units, lstm_layers_num, n_classes, keep_prob_placeholder
-    )
-    train_op, error = backward_propagation(labels, logits, weight_decay, learning_rate, global_step)
-    train(
-        train_op, error, features, labels, logits, x_train, y_train, x_eval, y_eval, train_epochs, number_samples,
-        batch_size, keep_prob_placeholder, keep_prob, epochs_per_eval, model_dir, global_step
-    )
     save_hyper_parameter(
-        model_dir, network_structure, time_step, input_size, hidden_layer_units, lstm_layers_num,
-        n_classes, keep_prob, learning_rate, weight_decay, batch_size, train_epochs, epochs_per_eval
+        model_dir, network_structure, time_step, input_size, hidden_layer_units, lstm_layers_num, keep_prob,
+        learning_rate, weight_decay, batch_size, train_epochs, epochs_per_eval, scope_name
     )
+    with tf.Graph().as_default() as g:
+        features = tf.placeholder(tf.float32, [None , time_step * input_size])  # [batch_size, 784]
+        labels = tf.placeholder(tf.float32, [None , 1])  # [batch_size, n_classes]
+        keep_prob_placeholder = tf.placeholder(tf.float32)  # 不被dropout的数据比例。在sess.run()时设置keep_prob具体的值
+        global_step = tf.train.get_or_create_global_step()
+        logits = forward_propagation(
+            network_structure, features, time_step, input_size,
+            hidden_layer_units, lstm_layers_num, keep_prob_placeholder, scope_name
+        )
+        train_op, error = backward_propagation(labels, logits, weight_decay, learning_rate, global_step)
+        train(
+            train_op, error, features, labels, logits, x_train, y_train, x_eval, y_eval, train_epochs, number_samples,
+            batch_size, keep_prob_placeholder, keep_prob, epochs_per_eval, model_dir, global_step
+        )
+
 
 
 
@@ -396,17 +420,17 @@ def predict(model_dir, global_step_list, x_test, y_test=None, model_name="model.
     input_size = hyper_parameter_pkl_obj[input_size_]
     hidden_layer_units = hyper_parameter_pkl_obj[hidden_layer_units_]
     lstm_layers_num = hyper_parameter_pkl_obj[lstm_layers_num_]
-    n_classes = hyper_parameter_pkl_obj[n_classes_]
+    scope_name = hyper_parameter_pkl_obj[scope_name_]
     # 新建一个计算图作为默认计算图，起一个别名叫 g
     with tf.Graph().as_default() as g:
         # 前向传播
         features = tf.placeholder(tf.float32, [None, time_step * input_size])  # [batch_size, 784]
-        labels = tf.placeholder(tf.float32, [None, n_classes])  # [batch_size, n_classes]
+        labels = tf.placeholder(tf.float32, [None, 1])  # [batch_size, n_classes]
         keep_prob_placeholder = tf.placeholder(tf.float32)  # 不被dropout的数据比例。在sess.run()时设置keep_prob具体的值
         global_step = tf.train.get_or_create_global_step()
         logits = forward_propagation(
             network_structure, features, time_step, input_size,
-            hidden_layer_units, lstm_layers_num, n_classes, keep_prob_placeholder
+            hidden_layer_units, lstm_layers_num, keep_prob_placeholder, scope_name
         )
         if y_test is not None:
             hubers = tf.losses.huber_loss(labels=labels, predictions=logits)
@@ -430,15 +454,18 @@ def predict(model_dir, global_step_list, x_test, y_test=None, model_name="model.
                     test_error = sess.run(
                         error, feed_dict={features: x_test, labels: y_test, keep_prob_placeholder: 1}
                     )
-                    print(str(global_step) + "   测试集：" + str(test_error))
+                    print(str(global_step) + "   测试集error：" + str(test_error))
                     test_mse_list.append(test_error)
-        # # 通过多个模型融合计算最终的预测值
-        y_pred_multi_model = pd.concat(y_pred_list, axis=1)  # 多个模型的预测值矩阵，每一列就是一个模型的预测值
-        y_pred = y_pred_multi_model.mean(axis=1)  # 计算每一行唯一值有几个
+        # 通过多个模型融合计算最终的预测值
+        if len(y_pred_list) > 0:
+            y_pred_multi_model = pd.concat(y_pred_list, axis=1)  # 多个模型的预测值矩阵，每一列就是一个模型的预测值
+            y_pred = y_pred_multi_model.mean(axis=1)  # 计算每一行唯一值有几个
+        else:
+            y_pred = y_pred_list[0]
         # 计算多个模型融合之后的平均正确率
         if y_test is not None:
             test_error = np.array(test_mse_list).mean()  # 平均正确率
-            print("测试集：" + str(test_error))
+            print("测试集error：" + str(test_error))
         return y_pred
 
 
@@ -447,28 +474,6 @@ def load_pkl(pkl_Path):
     with open(pkl_Path , 'rb') as f:
         pkl_obj = pickle.load(f)
     return pkl_obj
-
-
-
-def create_time_series(dataset, label_name, time_step=7):
-    columns = dataset.columns[dataset.columns != label_name].tolist()
-    new_columns = []
-    for i in range(time_step):
-        for column in columns:
-            new_columns.append(str(i + 1) + "期_" + column)
-    # 拼接七期的数据
-    data_list = []
-    for i in range(dataset.shape[0]):
-        if i >= dataset.shape[0] - time_step:
-            break
-        time_step_feature = dataset.loc[i: i + time_step - 1, dataset.columns != label_name]
-        feature_row = np.reshape(time_step_feature.values, [1, -1])
-        row = pd.DataFrame(feature_row, columns=new_columns)
-        label = dataset.loc[i + time_step, dataset.columns == label_name]
-        row.loc[:, label_name] = label.values
-        data_list.append(row)
-    time_series = pd.concat(data_list, axis=0)
-    return time_series
 
 
 
